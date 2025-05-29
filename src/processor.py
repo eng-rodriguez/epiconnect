@@ -1,7 +1,10 @@
+from scipy.stats import kurtosis
 from typing import List, Optional
+from mne.preprocessing import ICA
 from dataclasses import dataclass, field
 
 import mne
+import numpy as np
 
 # Reduce verbosity of MNE output
 mne.set_log_level("WARNING")
@@ -62,3 +65,48 @@ class EEGProcessor:
         processed = self._apply_notch_filter(processed)
         processed = self._apply_reference(processed)
         return processed
+
+    def remove_artifacts_ica(
+        self,
+        raw: mne.io.BaseRaw,
+        n_components: Optional[int] = None,
+        method: str = "fastica",
+        random_state: int = 97,
+        manual: bool = False,
+        heuristic: bool = True,
+    ) -> mne.io.BaseRaw:
+        """Remove artifacts using ICA without EOG/ECG channels."""
+
+        raw_copy = raw.copy().load_data()
+        picks = mne.pick_types(raw_copy.info, eeg=True, exclude="bads")
+
+        ica = ICA(n_components=n_components, method=method, random_state=random_state)
+        ica.fit(raw_copy, picks=picks)
+
+        components_to_exclude = []
+
+        if heuristic:
+            # herusitc: detect outliers using kurtosis or low variance
+            sources = ica.get_sources(raw_copy).get_data()
+            kurtosis_vals = kurtosis(sources, axis=1, fisher=True, bias=False)
+            threshold = 5.0
+            components_to_exclude = list(np.where(np.abs(kurtosis_vals) > threshold)[0])
+
+        if manual:
+            print("Review ICA components. Close all plots to proceed.")
+            ica.plot_components()
+            ica.plot_sources(raw_copy)
+
+            comp_str = input(
+                "Enter the component indices to exclude (comma-separated, e.g., 0,1,4): "
+            )
+            manual_comps = [
+                int(idx.strip()) for idx in comp_str.split(",") if idx.strip().isdigit()
+            ]
+            components_to_exclude.extend(manual_comps)
+
+        # Mark and apply exclusion
+        ica.exclude = components_to_exclude
+        raw_cleaned = ica.apply(raw_copy)
+
+        return raw_cleaned
